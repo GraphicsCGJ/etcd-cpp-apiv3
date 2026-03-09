@@ -1,0 +1,5 @@
+usr/include/etcd
+usr/lib/*/libetcd-cpp-api*.so
+usr/lib/libetcd-cpp-api*.so
+usr/lib/*/cmake/etcd-cpp-api
+usr/lib/cmake/etcd-cpp-api

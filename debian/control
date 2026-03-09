@@ -1,0 +1,26 @@
+Source: etcd-cpp-apiv3
+Section: libs
+Priority: optional
+Maintainer: gyujin-choi <gyujin.choi@mangoboost.io>
+Build-Depends: debhelper-compat (= 13),
+ cmake,
+ pkg-config,
+ libgrpc-dev,
+ libgrpc++-dev,
+ libprotobuf-dev,
+ protobuf-compiler-grpc,
+ libssl-dev
+Standards-Version: 4.6.0
+Homepage: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3
+
+Package: libetcd-cpp-apiv3-dev
+Architecture: any
+Depends: ${misc:Depends},
+ libgrpc++-dev,
+ libprotobuf-dev,
+ libssl-dev
+Description: C++ client library for etcd v3 API (development files)
+ etcd-cpp-apiv3 is a C++ client library for etcd's v3 API.
+ Provides synchronous (SyncClient) access to etcd key-value store.
+ .
+ This package contains headers, shared library, and cmake config files.
