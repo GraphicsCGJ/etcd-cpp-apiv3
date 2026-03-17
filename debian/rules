@@ -13,6 +13,9 @@ override_dh_auto_configure:
 		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
 		-DCMAKE_BUILD_TYPE=Release
 
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+
 override_dh_auto_test:
 
 override_dh_auto_clean:
