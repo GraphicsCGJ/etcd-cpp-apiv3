@@ -6,3 +6,14 @@ default.etcd/
 
 # vscode-clangd
 .cache/
+
+# debian build artifacts
+obj-x86_64-linux-gnu/
+dist/
+debian/tmp/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.log
+debian/*.substvars
+debian/libetcd-cpp-apiv3-dev/
