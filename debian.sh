@@ -5,6 +5,14 @@ export SOURCE_DIR=$(pwd)
 export REPO_BASE="/opt/etcd-cpp-apiv3-repo"
 export LIST_FILE="/etc/apt/sources.list.d/etcd-cpp-apiv3.list"
 
+# Distro: noble (default) or jammy (--jammy flag)
+DISTRO="noble"
+for arg in "$@"; do
+  [ "$arg" = "--jammy" ] && DISTRO="jammy"
+done
+
+export BASETGZ="/var/cache/pbuilder/${DISTRO}-base.tgz"
+
 # Helper: print error message and exit if the last command failed
 _check_error() {
   if [ $? -ne 0 ]; then
@@ -50,7 +58,7 @@ _build() {
   echo "	Command: sudo pdebuild --pbuilder pbuilder --debbuildopts \"-us -uc -b\" --buildresult \${SOURCE_DIR}/dist"
   echo "  > Output path: ${SOURCE_DIR}/dist"
   mkdir -p "${SOURCE_DIR}/dist"
-  _run_with_log sudo pdebuild --pbuilder pbuilder --debbuildopts "-us -uc -b" --buildresult "${SOURCE_DIR}/dist" -- --basetgz /var/cache/pbuilder/jammy-base.tgz
+  _run_with_log sudo pdebuild --pbuilder pbuilder --debbuildopts "-us -uc -b" --buildresult "${SOURCE_DIR}/dist" -- --basetgz "${BASETGZ}"
   _check_error "pdebuild failed"
   echo "  > pdebuild complete"
 
@@ -76,43 +84,47 @@ _build() {
 }
 
 _clean() {
-  echo "🧹 [Clean] Removing build artifacts and repository config"
+  local FORCE=0
+  [ "${1}" = "--force" ] && FORCE=1
+
+  echo "🧹 [Clean] Removing build artifacts${FORCE:+ and full environment}"
   cd "${SOURCE_DIR}" || exit 1
 
-  echo "🗑️  [1/5] Removing dist/ and debian build artifacts..."
+  echo "🗑️  [1/2] Removing dist/ and debian build artifacts..."
   echo "	Command: git restore debian/changelog && git clean -fdx debian/ obj-x86_64-linux-gnu/ dist/"
   git restore debian/changelog 2>/dev/null
   git clean -fdx debian/ obj-x86_64-linux-gnu/ dist/
   echo "  > Build artifacts removed"
 
-  echo "🗑️  [2/5] Clearing local repository... (${REPO_BASE})"
-  echo "	Command: sudo rm -rf \${REPO_BASE}/*"
-  if [ -d "$REPO_BASE" ]; then
-    sudo rm -rf "${REPO_BASE:?}"/*
-    echo "  > Repository directory ($REPO_BASE) cleared"
-  else
-    echo "  > Repository directory not found, skipping"
-  fi
-
-  echo "🗑️  [3/5] Removing APT source list... (${LIST_FILE})"
-  echo "	Command: sudo rm -f \${LIST_FILE}"
-  if [ -f "$LIST_FILE" ]; then
-    sudo rm -f "$LIST_FILE"
-    echo "  > APT source list ($LIST_FILE) removed"
-  else
-    echo "  > Source list file not found, skipping"
-  fi
-
-  echo "🔄 [4/5] Removing source package artifacts from ../"
+  echo "🔄 [2/2] Removing source package artifacts from ../"
   rm -f "${SOURCE_DIR}/../etcd-cpp-apiv3_"*.dsc \
         "${SOURCE_DIR}/../etcd-cpp-apiv3_"*.tar.gz \
         "${SOURCE_DIR}/../etcd-cpp-apiv3_"*.build \
         "${SOURCE_DIR}/../etcd-cpp-apiv3_"*_source.changes
   echo "  > Source artifacts removed"
 
-  echo "🔄 [5/5] Refreshing APT index..."
-  echo "	Command: sudo apt update"
-  _run_with_log sudo apt update
+  if [ "${FORCE}" = "1" ]; then
+    echo "🗑️  [--force] Clearing local repository... (${REPO_BASE})"
+    if [ -d "$REPO_BASE" ]; then
+      sudo rm -rf "${REPO_BASE:?}"/*
+      echo "  > Repository directory ($REPO_BASE) cleared"
+    else
+      echo "  > Repository directory not found, skipping"
+    fi
+
+    echo "🗑️  [--force] Removing APT source list... (${LIST_FILE})"
+    if [ -f "$LIST_FILE" ]; then
+      sudo rm -f "$LIST_FILE"
+      echo "  > APT source list ($LIST_FILE) removed"
+    else
+      echo "  > Source list file not found, skipping"
+    fi
+
+    echo "🔄 [--force] Refreshing APT index..."
+    _run_with_log sudo apt update
+  else
+    echo "  > Skipping repo/APT cleanup (use --force to include)"
+  fi
 
   echo "✨ Clean complete!"
   cd "${SOURCE_DIR}" || exit 1
@@ -163,16 +175,18 @@ _package() {
 }
 
 # Usage
-echo "💡 Usage (source debian.sh then call, or run directly):"
-echo "  _build   : bump version with dch and run pdebuild in isolation"
-echo "  _package : set up and register local APT repository"
-echo "  _clean   : remove all build artifacts and repository config"
+echo "💡 Usage:"
+echo "  build   [--jammy]         : bump version with dch and run pdebuild in isolation"
+echo "  package [--jammy]         : set up and register local APT repository"
+echo "  clean   [--force] [--jammy]: remove build artifacts (dist/, debian/, source files)"
+echo "  clean   --force  [--jammy]: clean + remove repo and APT source list"
+echo "  (default distro: noble)"
 
 # Entry point
 case "$1" in
   build)   _build ;;
   package) _package ;;
-  clean)   _clean ;;
+  clean)   _clean "${2}" ;;
   all)     _build && _package ;;
-  *)       echo "Usage: $0 {build|package|clean|all}" ;;
+  *)       echo "Usage: $0 {build|package|clean [--force]|all} [--jammy]" ;;
 esac
