@@ -45,6 +45,7 @@ DISTRO="noble"  # default: Ubuntu 24.04 LTS
 CLEAN_APT_LIST=0
 CLEAN_PACKAGES=0
 CLEAN_TARBALL=0
+CLEAN_APTLY=0
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
 SOURCE_DIR=$(pwd)
@@ -64,6 +65,7 @@ while [ $# -gt 0 ]; do
     --apt-list)     CLEAN_APT_LIST=1 ;; # Also remove APT source list on clean
     --packages)     CLEAN_PACKAGES=1 ;; # Also remove local package repo on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
+    --aptly)        CLEAN_APTLY=1 ;;   # Also remove stale packages from aptly repo on clean
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
     --aptly)        PACKAGE_MODE="aptly" ;;
@@ -295,6 +297,50 @@ _clean() {
     fi
   fi
 
+  if [ "${CLEAN_APTLY}" = "1" ]; then
+    echo "🗑️  [--aptly] Removing stale packages from aptly repo '${APTLY_REPO}'..."
+    if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ] || [ -z "${APTLY_REPO}" ]; then
+      echo "  > Skipping: APTLY_TOKEN, APTLY_URL, APTLY_REPO must all be set."
+    else
+      # Fetch all packages, filter out ones not matching ~DISTRO suffix, delete them
+      local all_pkgs stale_refs
+      all_pkgs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+        "${APTLY_URL}/api/repos/${APTLY_REPO}/packages") \
+        || _check_error "Failed to query aptly repo '${APTLY_REPO}'"
+
+      # Keep only refs that do NOT end with ~DISTRO — those are stale
+      stale_refs=$(echo "${all_pkgs}" | \
+        python3 -c "
+import sys, json
+pkgs = json.load(sys.stdin)
+stale = [p for p in pkgs if not p.endswith('~${DISTRO}')]
+print(json.dumps(stale))
+")
+
+      if [ "${stale_refs}" = "[]" ]; then
+        echo "  > No stale packages found"
+      else
+        echo "  > Stale packages: ${stale_refs}"
+        curl -sf -X DELETE \
+          -H "Authorization: Bearer ${APTLY_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data "{\"PackageRefs\": ${stale_refs}}" \
+          "${APTLY_URL}/api/repos/${APTLY_REPO}/packages" \
+          || _check_error "Failed to delete stale packages"
+        echo "  > Stale packages removed"
+
+        echo "  > Updating publish for distribution '${DISTRO}'..."
+        curl -sf --path-as-is -X PUT \
+          -H "Authorization: Bearer ${APTLY_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data '{"Signing": {"Skip": true}}' \
+          "${APTLY_URL}/api/publish/./${DISTRO}" \
+          || _check_error "Failed to update aptly publish"
+        echo "  > Publish updated"
+      fi
+    fi
+  fi
+
   echo "✨ Clean complete!"
 }
 
@@ -485,6 +531,7 @@ echo "  clean                   [--jammy]                                       
 echo "  clean --packages        [--pkg-dir <path>] [--jammy]                       : clean + remove local package repo"
 echo "  clean --apt-list        [--jammy]                                           : clean + remove APT source list"
 echo "  clean --tarball         [--jammy] [--tarball-dir <path>]                   : clean + remove custom base tarball"
+echo "  clean --aptly           [--jammy]                                           : clean + remove stale packages from aptly repo (requires APTLY_* vars)"
 echo "  all     --local [--pkg-dir <path>] [--jammy] [--name <n>] [--email <e>]   : build + package --local"
 echo "  base-reset      [--jammy] [--tarball-dir <path>]                             : delete and recreate custom base tarball"
 echo "  (default distro: noble / default tarball dir: /var/cache/pbuilder / default source dir: pwd)"
