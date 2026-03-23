@@ -19,8 +19,10 @@
 #   --name <name>   / DEBFULLNAME    Maintainer full name  (default: Gyujin)
 #   --email <email> / DEBEMAIL       Maintainer email      (default: ckjin95@gmail.com)
 #
-# JFROG  (for package --remote)
-#   --jfrog-token <token>  JFrog Reference Token (Identity Token)
+# JFROG  (for package --jfrog)
+#   Resolved in order: env var → CLI arg → fail
+#   JFROG_TOKEN / --jfrog-token <token>  JFrog Reference Token (Identity Token)
+#   JFROG_URL   / --jfrog-url   <url>    Artifactory repository URL
 
 # Maintainer identity used by dch when bumping the changelog version.
 DEBFULLNAME="${DEBFULLNAME:-Gyujin}"
@@ -33,8 +35,9 @@ CLEAN_TARBALL=0
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
 SOURCE_DIR=$(pwd)
-JFROG_TOKEN=""
-JFROG_URL="https://gyujinv2.jfrog.io/artifactory/gj-test"  # fixed remote target
+# CLI-supplied JFrog values (env vars take priority; resolved after arg parsing below).
+_CLI_JFROG_TOKEN=""
+_CLI_JFROG_URL=""
 COMMAND="$1"
 shift
 while [ $# -gt 0 ]; do
@@ -43,15 +46,20 @@ while [ $# -gt 0 ]; do
     --apt-list)     CLEAN_APT_LIST=1 ;; # Also remove APT source list on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
     --local)        PACKAGE_MODE="local" ;;
-    --remote)       PACKAGE_MODE="remote" ;;
+    --jfrog)        PACKAGE_MODE="jfrog" ;;
     --name)         DEBFULLNAME="$2"; shift ;;
     --email)        DEBEMAIL="$2"; shift ;;
     --tarball-dir)  TARBALL_DIR="$2"; shift ;;  # Override tarball directory (e.g. for CI caching)
     --source-dir)   SOURCE_DIR=$(realpath "$2"); shift ;;  # Override source directory (e.g. for monorepo CI)
-    --jfrog-token)  JFROG_TOKEN="$2"; shift ;;
+    --jfrog-token)  _CLI_JFROG_TOKEN="$2"; shift ;;
+    --jfrog-url)    _CLI_JFROG_URL="$2"; shift ;;
   esac
   shift
 done
+
+# env var > CLI arg (inherit from environment if already set, else fall back to CLI)
+JFROG_TOKEN="${JFROG_TOKEN:-${_CLI_JFROG_TOKEN}}"
+JFROG_URL="${JFROG_URL:-${_CLI_JFROG_URL}}"
 
 # Absolute path of the source tree; used throughout to avoid working-directory confusion.
 export SOURCE_DIR
@@ -305,13 +313,17 @@ _package_local() {
   cd "${SOURCE_DIR}" || exit 1
 }
 
-# Upload .deb packages to JFrog Artifactory (https://gyujinv2.jfrog.io/artifactory/gj-test).
-# Requires --jfrog-user and --jfrog-token.
-_package_remote() {
-  echo "📤 [Package/remote] Uploading .deb files to JFrog Artifactory"
+# Upload .deb packages to JFrog Artifactory.
+# Credentials resolved at startup: env var > CLI arg (--jfrog-token / --jfrog-url).
+_package_jfrog() {
+  echo "📤 [Package/jfrog] Uploading .deb files to JFrog Artifactory"
 
   if [ -z "${JFROG_TOKEN}" ]; then
-    echo "❌ --jfrog-token is required for remote packaging."
+    echo "❌ JFrog token not set. Use --jfrog-token or set JFROG_TOKEN env var."
+    exit 1
+  fi
+  if [ -z "${JFROG_URL}" ]; then
+    echo "❌ JFrog URL not set. Use --jfrog-url or set JFROG_URL env var."
     exit 1
   fi
 
@@ -337,16 +349,16 @@ _package_remote() {
   done
 
   echo "--------------------------------------------------"
-  echo "✅ Remote upload complete → ${JFROG_URL}"
+  echo "✅ JFrog upload complete → ${JFROG_URL}"
   echo "--------------------------------------------------"
 }
 
 _package() {
   case "${PACKAGE_MODE}" in
     local)  _package_local ;;
-    remote) _package_remote ;;
+    jfrog)  _package_jfrog ;;
     *)
-      echo "❌ Specify a package mode: package --local | --remote"
+      echo "❌ Specify a package mode: package --local | --jfrog"
       exit 1
       ;;
   esac
@@ -355,7 +367,7 @@ _package() {
 echo "💡 Usage:"
 echo "  build           [--jammy] [--name <n>] [--email <e>] [--tarball-dir <path>] [--source-dir <path>] : bump version and run pdebuild"
 echo "  package --local [--jammy]                                                   : build dist-package/ from dist/*.deb"
-echo "  package --remote --jfrog-token <t> [--jammy]                               : upload dist/*.deb to JFrog Artifactory"
+echo "  package --jfrog [--jfrog-token <t>] [--jfrog-url <u>] [--jammy]           : upload dist/*.deb to JFrog (env: JFROG_TOKEN, JFROG_URL)"
 echo "  clean                [--jammy]                                               : remove dist/, dist-package/, changelog.bak"
 echo "  clean --apt-list     [--jammy]                                               : clean + remove APT source list"
 echo "  clean --tarball      [--jammy] [--tarball-dir <path>]                        : clean + remove custom base tarball"
@@ -369,5 +381,5 @@ case "$COMMAND" in
   clean)      _clean ;;
   all)        _build && _package ;;
   base-reset) _base_reset ;;
-  *)          echo "Usage: $0 {build|package --local|package --remote|clean [--force]|all --local|base-reset} [--jammy]" ;;
+  *)          echo "Usage: $0 {build|package --local|package --jfrog|clean|all --local|base-reset} [--jammy]" ;;
 esac
