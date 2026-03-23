@@ -24,7 +24,7 @@ DEBFULLNAME="${DEBFULLNAME:-Gyujin}"
 DEBEMAIL="${DEBEMAIL:-ckjin95@gmail.com}"
 
 # Parse the subcommand first, then consume remaining flags.
-DISTRO="noble"
+DISTRO="noble"  # default: Ubuntu 24.04 LTS
 CLEAN_APT_LIST=0
 CLEAN_TARBALL=0
 PACKAGE_MODE=""
@@ -50,8 +50,10 @@ done
 # Absolute path of the source tree; used throughout to avoid working-directory confusion.
 export SOURCE_DIR
 
-# Local APT package repository inside the project tree.
-DIST_PKG_DIR="${SOURCE_DIR}/dist-package"
+# Build output directory, separated by distro (e.g. dist/jammy/, dist/noble/).
+DIST_DIR="${SOURCE_DIR}/dist/${DISTRO}"
+# Local APT package repository inside the project tree, separated by distro.
+DIST_PKG_DIR="${SOURCE_DIR}/dist-package/${DISTRO}"
 LIST_FILE="/etc/apt/sources.list.d/${PKG_NAME}.list"
 
 export DEBFULLNAME DEBEMAIL
@@ -147,15 +149,15 @@ _build() {
   echo "  > changelog updated"
 
   echo "📦 [2/2] Starting isolated build with pdebuild..."
-  echo "  > Output path: ${SOURCE_DIR}/dist"
-  mkdir -p "${SOURCE_DIR}/dist"
+  echo "  > Output path: ${DIST_DIR}"
+  mkdir -p "${DIST_DIR}"
 
   local bindmount_args=()
   [ -n "${EXTRA_BINDMOUNTS:-}" ] && bindmount_args=(--bindmounts "${EXTRA_BINDMOUNTS}")
 
   # -us -uc: skip signing (unnecessary for local/CI builds).
   # -b: binary-only build (no source package needed).
-  sudo pdebuild --pbuilder pbuilder --debbuildopts "-us -uc -b" --buildresult "${SOURCE_DIR}/dist" -- \
+  sudo pdebuild --pbuilder pbuilder --debbuildopts "-us -uc -b" --buildresult "${DIST_DIR}" -- \
     --basetgz "${BASETGZ}" \
     "${bindmount_args[@]}" \
     || _check_error "pdebuild failed"
@@ -263,14 +265,14 @@ _package_local() {
   echo "📦 [Package/local] Building local APT repository from dist/"
 
   echo "🔍 [1/3] Collecting .deb files..."
-  if ! ls "${SOURCE_DIR}/dist/"*.deb &>/dev/null; then
-    echo "❌ No .deb files found in dist/. Run build first."
+  if ! ls "${DIST_DIR}/"*.deb &>/dev/null; then
+    echo "❌ No .deb files found in ${DIST_DIR}/. Run build first."
     exit 1
   fi
 
   rm -rf "${DIST_PKG_DIR}"
   mkdir -p "${DIST_PKG_DIR}"
-  cp "${SOURCE_DIR}/dist/"*.deb "${DIST_PKG_DIR}/" \
+  cp "${DIST_DIR}/"*.deb "${DIST_PKG_DIR}/" \
     || _check_error "Failed to copy .deb files to dist-package/"
   echo "  > .deb files copied to ${DIST_PKG_DIR}"
 
