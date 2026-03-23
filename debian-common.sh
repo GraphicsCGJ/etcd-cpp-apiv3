@@ -455,7 +455,7 @@ _package_aptly() {
     -H "Authorization: Bearer ${APTLY_TOKEN}" \
     -H "Content-Type: application/json" \
     --data '{"Signing": {"Skip": true}}' \
-    "${APTLY_URL}/api/publish/./${DISTRO}" \
+    "${APTLY_URL}/api/publish/%2E/${DISTRO}" \
     || _check_error "Failed to update publish for distribution '${DISTRO}'"
   echo "  > Publish updated (distribution: ${DISTRO})"
 
