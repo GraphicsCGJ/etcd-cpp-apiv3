@@ -84,8 +84,10 @@ done
 # env var > CLI arg (inherit from environment if already set, else fall back to CLI)
 JFROG_TOKEN="${JFROG_TOKEN:-${_CLI_JFROG_TOKEN}}"
 JFROG_URL="${JFROG_URL:-${_CLI_JFROG_URL}}"
+JFROG_URL="${JFROG_URL%/}"  # strip trailing slash
 APTLY_TOKEN="${APTLY_TOKEN:-${_CLI_APTLY_TOKEN}}"
 APTLY_URL="${APTLY_URL:-${_CLI_APTLY_URL}}"
+APTLY_URL="${APTLY_URL%/}"  # strip trailing slash
 APTLY_REPO="${APTLY_REPO:-${_CLI_APTLY_REPO}}"
 
 # Absolute path of the source tree; used throughout to avoid working-directory confusion.
