@@ -29,6 +29,12 @@
 #   Resolved in order: env var → CLI arg → fail
 #   JFROG_TOKEN / --jfrog-token <token>  JFrog Reference Token (Identity Token)
 #   JFROG_URL   / --jfrog-url   <url>    Artifactory repository URL
+#
+# APTLY  (for package --aptly)
+#   Resolved in order: env var → CLI arg → fail
+#   APTLY_TOKEN / --aptly-token <token>  Aptly API Bearer token
+#   APTLY_URL   / --aptly-url   <url>    Aptly API base URL (e.g. http://aptly.example.com:8080)
+#   APTLY_REPO  / --aptly-repo  <name>   Aptly local repository name
 
 # Maintainer identity used by dch when bumping the changelog version.
 DEBFULLNAME="${DEBFULLNAME:-Gyujin}"
@@ -46,6 +52,10 @@ _PKG_DIR_ARG=""
 # CLI-supplied JFrog values (env vars take priority; resolved after arg parsing below).
 _CLI_JFROG_TOKEN=""
 _CLI_JFROG_URL=""
+# CLI-supplied Aptly values (env vars take priority; resolved after arg parsing below).
+_CLI_APTLY_TOKEN=""
+_CLI_APTLY_URL=""
+_CLI_APTLY_REPO=""
 COMMAND="$1"
 shift
 while [ $# -gt 0 ]; do
@@ -56,6 +66,7 @@ while [ $# -gt 0 ]; do
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
+    --aptly)        PACKAGE_MODE="aptly" ;;
     --name)         DEBFULLNAME="$2"; shift ;;
     --email)        DEBEMAIL="$2"; shift ;;
     --pkg-dir)      _PKG_DIR_ARG=$(realpath "$2"); shift ;;  # Override local package repo path
@@ -63,6 +74,9 @@ while [ $# -gt 0 ]; do
     --source-dir)   SOURCE_DIR=$(realpath "$2"); shift ;;  # Override source directory (e.g. for monorepo CI)
     --jfrog-token)  _CLI_JFROG_TOKEN="$2"; shift ;;
     --jfrog-url)    _CLI_JFROG_URL="$2"; shift ;;
+    --aptly-token)  _CLI_APTLY_TOKEN="$2"; shift ;;
+    --aptly-url)    _CLI_APTLY_URL="$2"; shift ;;
+    --aptly-repo)   _CLI_APTLY_REPO="$2"; shift ;;
   esac
   shift
 done
@@ -70,6 +84,9 @@ done
 # env var > CLI arg (inherit from environment if already set, else fall back to CLI)
 JFROG_TOKEN="${JFROG_TOKEN:-${_CLI_JFROG_TOKEN}}"
 JFROG_URL="${JFROG_URL:-${_CLI_JFROG_URL}}"
+APTLY_TOKEN="${APTLY_TOKEN:-${_CLI_APTLY_TOKEN}}"
+APTLY_URL="${APTLY_URL:-${_CLI_APTLY_URL}}"
+APTLY_REPO="${APTLY_REPO:-${_CLI_APTLY_REPO}}"
 
 # Absolute path of the source tree; used throughout to avoid working-directory confusion.
 export SOURCE_DIR
@@ -169,8 +186,9 @@ _build() {
   echo "  > New version:     ${NEW_VER}"
 
   # Back up changelog before dch modifies it; restore on exit regardless of outcome.
-  cp debian/changelog debian/changelog.bak
-  trap 'mv "${SOURCE_DIR}/debian/changelog.bak" "${SOURCE_DIR}/debian/changelog"; trap - EXIT' EXIT
+  # Stored outside debian/ to prevent dh_clean from deleting it during the build.
+  cp debian/changelog "${SOURCE_DIR}/.changelog.bak"
+  trap 'mv "${SOURCE_DIR}/.changelog.bak" "${SOURCE_DIR}/debian/changelog"; trap - EXIT' EXIT
 
   dch -v "${NEW_VER}" --force-bad-version --no-query "Automated CI/CD build" \
     || _check_error "Failed to update version with dch"
@@ -232,8 +250,8 @@ _clean() {
   echo "  > Source artifacts removed"
 
   echo "📋 [3/3] Restoring debian/changelog from backup..."
-  if [ -f "${SOURCE_DIR}/debian/changelog.bak" ]; then
-    mv "${SOURCE_DIR}/debian/changelog.bak" "${SOURCE_DIR}/debian/changelog"
+  if [ -f "${SOURCE_DIR}/.changelog.bak" ]; then
+    mv "${SOURCE_DIR}/.changelog.bak" "${SOURCE_DIR}/debian/changelog"
     echo "  > changelog restored from backup"
   else
     echo "  > No changelog backup found, skipping"
@@ -382,12 +400,75 @@ _package_jfrog() {
   echo "--------------------------------------------------"
 }
 
+# Upload .deb packages to an Aptly API server.
+# Credentials resolved at startup: env var > CLI arg (--aptly-token / --aptly-url / --aptly-repo).
+# Steps:
+#   1. Upload each .deb to a temporary staging directory on the server.
+#   2. Add packages from the staging directory into the local Aptly repo.
+#   3. Trigger a publish update so clients can see the new packages.
+_package_aptly() {
+  echo "📤 [Package/aptly] Uploading .deb files to Aptly"
+
+  if [ -z "${APTLY_TOKEN}" ]; then
+    echo "❌ Aptly token not set. Use --aptly-token or set APTLY_TOKEN env var."
+    exit 1
+  fi
+  if [ -z "${APTLY_URL}" ]; then
+    echo "❌ Aptly URL not set. Use --aptly-url or set APTLY_URL env var."
+    exit 1
+  fi
+  if [ -z "${APTLY_REPO}" ]; then
+    echo "❌ Aptly repo not set. Use --aptly-repo or set APTLY_REPO env var."
+    exit 1
+  fi
+
+  echo "🔍 [1/3] Collecting .deb files from ${DIST_DIR}..."
+  if ! ls "${DIST_DIR}/"*.deb &>/dev/null; then
+    echo "❌ No .deb files found in ${DIST_DIR}/. Run build first."
+    exit 1
+  fi
+
+  # Use a per-package per-distro staging directory to avoid collisions with concurrent uploads.
+  local upload_dir="${PKG_NAME}-${DISTRO}"
+
+  echo "📤 [2/3] Uploading to ${APTLY_URL} (staging dir: ${upload_dir})..."
+  for deb_file in "${DIST_DIR}/"*.deb; do
+    local filename
+    filename=$(basename "${deb_file}")
+    echo "  > Uploading ${filename}..."
+    curl -f -H "Authorization: Bearer ${APTLY_TOKEN}" \
+      -F "file=@${deb_file}" \
+      "${APTLY_URL}/api/files/${upload_dir}" \
+      || _check_error "Failed to upload ${filename}"
+    echo "  > Uploaded: ${filename}"
+  done
+
+  echo "📋 [3/3] Adding packages to repo '${APTLY_REPO}' and updating publish..."
+  curl -f -X POST -H "Authorization: Bearer ${APTLY_TOKEN}" \
+    "${APTLY_URL}/api/repos/${APTLY_REPO}/file/${upload_dir}" \
+    || _check_error "Failed to add packages to repo '${APTLY_REPO}'"
+  echo "  > Packages added to repo"
+
+  curl -f -X PUT \
+    -H "Authorization: Bearer ${APTLY_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --data '{"Signing": {"Skip": true}}' \
+    "${APTLY_URL}/api/publish/./${DISTRO}" \
+    || _check_error "Failed to update publish for distribution '${DISTRO}'"
+  echo "  > Publish updated (distribution: ${DISTRO})"
+
+  echo "--------------------------------------------------"
+  echo "✅ Aptly upload complete → ${APTLY_URL} (repo: ${APTLY_REPO}, distro: ${DISTRO})"
+  echo "--------------------------------------------------"
+}
+
 _package() {
   case "${PACKAGE_MODE}" in
     local)  _package_local ;;
     jfrog)  _package_jfrog ;;
+    aptly)  _package_aptly ;;
     *)
-      echo "❌ Specify a package mode: package --local | --jfrog"
+      echo "❌ Specify a package mode: package --local | --jfrog | --aptly"
       exit 1
       ;;
   esac
@@ -397,7 +478,8 @@ echo "💡 Usage:"
 echo "  build           [--jammy] [--name <n>] [--email <e>] [--tarball-dir <path>] [--source-dir <path>] : bump version and run pdebuild"
 echo "  package --local [--pkg-dir <path>] [--jammy]                                : accumulate dist/*.deb into local APT repo, regenerate Packages index"
 echo "  package --jfrog [--jfrog-token <t>] [--jfrog-url <u>] [--jammy]           : upload dist/*.deb to JFrog (env: JFROG_TOKEN, JFROG_URL)"
-echo "  clean                   [--jammy]                                           : remove dist/<distro>/, obj dirs, changelog.bak"
+echo "  package --aptly [--aptly-token <t>] [--aptly-url <u>] [--aptly-repo <r>] [--jammy] : upload dist/*.deb to Aptly (env: APTLY_TOKEN, APTLY_URL, APTLY_REPO)"
+echo "  clean                   [--jammy]                                           : remove dist/<distro>/, obj dirs"
 echo "  clean --packages        [--pkg-dir <path>] [--jammy]                       : clean + remove local package repo"
 echo "  clean --apt-list        [--jammy]                                           : clean + remove APT source list"
 echo "  clean --tarball         [--jammy] [--tarball-dir <path>]                   : clean + remove custom base tarball"
@@ -411,5 +493,5 @@ case "$COMMAND" in
   clean)      _clean ;;
   all)        _build && _package ;;
   base-reset) _base_reset ;;
-  *)          echo "Usage: $0 {build|package --local|package --jfrog|clean|all --local|base-reset} [--jammy]" ;;
+  *)          echo "Usage: $0 {build|package --local|package --jfrog|package --aptly|clean|all --local|base-reset} [--jammy]" ;;
 esac
