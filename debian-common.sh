@@ -179,9 +179,9 @@ _build() {
   echo "📝 [1/2] Generating version with dch..."
   local CURRENT_VER BASE_VER
   CURRENT_VER=$(dpkg-parsechangelog -S Version)
-  # Strip any accumulated +build... suffix so timestamps never pile up.
+  # Strip any accumulated +build... suffix so dates never pile up.
   BASE_VER="${CURRENT_VER%%+build*}"
-  local NEW_VER="${BASE_VER}+build$(date +%y%m%d-%H%M%S)"
+  local NEW_VER="${BASE_VER}+build-$(date +%y%m%d)"
   echo "  > Current version: ${CURRENT_VER}"
   echo "  > New version:     ${NEW_VER}"
 
