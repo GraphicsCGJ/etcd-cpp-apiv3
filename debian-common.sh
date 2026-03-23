@@ -18,6 +18,9 @@
 # MAINTAINER  (priority: CLI flag > env var > default)
 #   --name <name>   / DEBFULLNAME    Maintainer full name  (default: Gyujin)
 #   --email <email> / DEBEMAIL       Maintainer email      (default: ckjin95@gmail.com)
+#
+# JFROG  (for package --remote)
+#   --jfrog-token <token>  JFrog Reference Token (Identity Token)
 
 # Maintainer identity used by dch when bumping the changelog version.
 DEBFULLNAME="${DEBFULLNAME:-Gyujin}"
@@ -30,6 +33,8 @@ CLEAN_TARBALL=0
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
 SOURCE_DIR=$(pwd)
+JFROG_TOKEN=""
+JFROG_URL="https://gyujinv2.jfrog.io/artifactory/gj-test"  # fixed remote target
 COMMAND="$1"
 shift
 while [ $# -gt 0 ]; do
@@ -43,6 +48,7 @@ while [ $# -gt 0 ]; do
     --email)        DEBEMAIL="$2"; shift ;;
     --tarball-dir)  TARBALL_DIR="$2"; shift ;;  # Override tarball directory (e.g. for CI caching)
     --source-dir)   SOURCE_DIR=$(realpath "$2"); shift ;;  # Override source directory (e.g. for monorepo CI)
+    --jfrog-token)  JFROG_TOKEN="$2"; shift ;;
   esac
   shift
 done
@@ -299,20 +305,40 @@ _package_local() {
   cd "${SOURCE_DIR}" || exit 1
 }
 
-# Stub for remote (JFrog) publishing — not yet configured.
+# Upload .deb packages to JFrog Artifactory (https://gyujinv2.jfrog.io/artifactory/gj-test).
+# Requires --jfrog-user and --jfrog-token.
 _package_remote() {
-  echo "❌ Remote packaging is not yet configured."
-  echo "   (JFrog upload stub — configure credentials and uncomment curl calls to enable)"
-  # Example JFrog upload (uncomment and fill in to enable):
-  # JFROG_URL="https://<your-instance>.jfrog.io/artifactory/<repo>"
-  # JFROG_API_KEY="<your-api-key>"
-  # for deb_file in "${SOURCE_DIR}/dist/"*.deb; do
-  #   curl -H "X-JFrog-Art-Api: ${JFROG_API_KEY}" \
-  #        -T "${deb_file}" \
-  #        "${JFROG_URL}/$(basename "${deb_file}")" \
-  #     || _check_error "Failed to upload $(basename "${deb_file}")"
-  # done
-  exit 1
+  echo "📤 [Package/remote] Uploading .deb files to JFrog Artifactory"
+
+  if [ -z "${JFROG_TOKEN}" ]; then
+    echo "❌ --jfrog-token is required for remote packaging."
+    exit 1
+  fi
+
+  echo "🔍 [1/2] Collecting .deb files from ${DIST_DIR}..."
+  if ! ls "${DIST_DIR}/"*.deb &>/dev/null; then
+    echo "❌ No .deb files found in ${DIST_DIR}/. Run build first."
+    exit 1
+  fi
+
+  echo "📤 [2/2] Uploading to ${JFROG_URL} (distribution: ${DISTRO})..."
+  for deb_file in "${DIST_DIR}/"*.deb; do
+    local filename arch
+    filename=$(basename "${deb_file}")
+    # Extract architecture from filename: <name>_<version>_<arch>.deb
+    arch=$(echo "${filename}" | sed 's/.*_\([^_]*\)\.deb$/\1/')
+
+    echo "  > Uploading ${filename} (arch=${arch})..."
+    curl -f -H "Authorization: Bearer ${JFROG_TOKEN}" \
+      -XPUT "${JFROG_URL}/pool/${filename};deb.distribution=${DISTRO};deb.component=main;deb.architecture=${arch}" \
+      -T "${deb_file}" \
+      || _check_error "Failed to upload ${filename}"
+    echo "  > Uploaded: ${filename}"
+  done
+
+  echo "--------------------------------------------------"
+  echo "✅ Remote upload complete → ${JFROG_URL}"
+  echo "--------------------------------------------------"
 }
 
 _package() {
@@ -329,7 +355,7 @@ _package() {
 echo "💡 Usage:"
 echo "  build           [--jammy] [--name <n>] [--email <e>] [--tarball-dir <path>] [--source-dir <path>] : bump version and run pdebuild"
 echo "  package --local [--jammy]                                                   : build dist-package/ from dist/*.deb"
-echo "  package --remote                                                             : (stub) upload to remote repository"
+echo "  package --remote --jfrog-token <t> [--jammy]                               : upload dist/*.deb to JFrog Artifactory"
 echo "  clean                [--jammy]                                               : remove dist/, dist-package/, changelog.bak"
 echo "  clean --apt-list     [--jammy]                                               : clean + remove APT source list"
 echo "  clean --tarball      [--jammy] [--tarball-dir <path>]                        : clean + remove custom base tarball"
