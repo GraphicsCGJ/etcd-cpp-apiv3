@@ -305,17 +305,27 @@ _clean() {
     if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ] || [ -z "${APTLY_REPO}" ]; then
       echo "  > Skipping aptly: APTLY_TOKEN, APTLY_URL, APTLY_REPO must all be set."
     else
-      local all_pkgs
-      all_pkgs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+      local all_pkgs all_refs
+      all_refs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
         "${APTLY_URL}/api/repos/${APTLY_REPO}/packages") \
         || _check_error "Failed to query aptly repo '${APTLY_REPO}'"
+      all_pkgs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+        "${APTLY_URL}/api/repos/${APTLY_REPO}/packages?format=details") \
+        || _check_error "Failed to query aptly repo details '${APTLY_REPO}'"
 
-      # --list: print packages and stop
+      # --list: print packages in readable format
       if [ "${CLEAN_APTLY_LIST}" = "1" ]; then
         echo "📋 [--list] Packages in '${APTLY_REPO}':"
         echo "${all_pkgs}" | python3 -c "
 import sys, json
-for p in json.load(sys.stdin): print('  ', p)
+pkgs = json.load(sys.stdin)
+if not pkgs:
+    print('  (empty)')
+else:
+    print(f\"  {'Package':<30} {'Version':<40} {'Arch'}\")
+    print('  ' + '-'*75)
+    for p in pkgs:
+        print(f\"  {p['Package']:<30} {p['Version']:<40} {p['Architecture']}\")
 "
       fi
 
@@ -323,7 +333,7 @@ for p in json.load(sys.stdin): print('  ', p)
       if [ -n "${CLEAN_APTLY_REMOVE}" ]; then
         echo "🗑️  [--remove] Removing packages matching '${CLEAN_APTLY_REMOVE}' from '${APTLY_REPO}'..."
         local remove_refs
-        remove_refs=$(echo "${all_pkgs}" | python3 -c "
+        remove_refs=$(echo "${all_refs}" | python3 -c "
 import sys, json
 pkgs = json.load(sys.stdin)
 matched = [p for p in pkgs if '${CLEAN_APTLY_REMOVE}' in p]
