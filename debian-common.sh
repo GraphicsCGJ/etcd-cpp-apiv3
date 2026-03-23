@@ -19,6 +19,12 @@
 #   --name <name>   / DEBFULLNAME    Maintainer full name  (default: Gyujin)
 #   --email <email> / DEBEMAIL       Maintainer email      (default: ckjin95@gmail.com)
 #
+# LOCAL PACKAGE REPO  (for package --local)
+#   --pkg-dir <path>   Override the package repository directory
+#                      Default: <source-dir>/dist-package/<distro>/
+#                      Packages index is regenerated on every run — .deb files accumulate.
+#                      Use clean --packages to wipe the repo.
+#
 # JFROG  (for package --jfrog)
 #   Resolved in order: env var → CLI arg → fail
 #   JFROG_TOKEN / --jfrog-token <token>  JFrog Reference Token (Identity Token)
@@ -31,10 +37,12 @@ DEBEMAIL="${DEBEMAIL:-ckjin95@gmail.com}"
 # Parse the subcommand first, then consume remaining flags.
 DISTRO="noble"  # default: Ubuntu 24.04 LTS
 CLEAN_APT_LIST=0
+CLEAN_PACKAGES=0
 CLEAN_TARBALL=0
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
 SOURCE_DIR=$(pwd)
+_PKG_DIR_ARG=""
 # CLI-supplied JFrog values (env vars take priority; resolved after arg parsing below).
 _CLI_JFROG_TOKEN=""
 _CLI_JFROG_URL=""
@@ -44,11 +52,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --jammy)        DISTRO="jammy" ;;   # Target Ubuntu 22.04 instead of the default 24.04
     --apt-list)     CLEAN_APT_LIST=1 ;; # Also remove APT source list on clean
+    --packages)     CLEAN_PACKAGES=1 ;; # Also remove local package repo on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
     --name)         DEBFULLNAME="$2"; shift ;;
     --email)        DEBEMAIL="$2"; shift ;;
+    --pkg-dir)      _PKG_DIR_ARG=$(realpath "$2"); shift ;;  # Override local package repo path
     --tarball-dir)  TARBALL_DIR="$2"; shift ;;  # Override tarball directory (e.g. for CI caching)
     --source-dir)   SOURCE_DIR=$(realpath "$2"); shift ;;  # Override source directory (e.g. for monorepo CI)
     --jfrog-token)  _CLI_JFROG_TOKEN="$2"; shift ;;
@@ -66,8 +76,12 @@ export SOURCE_DIR
 
 # Build output directory, separated by distro (e.g. dist/jammy/, dist/noble/).
 DIST_DIR="${SOURCE_DIR}/dist/${DISTRO}"
-# Local APT package repository inside the project tree, separated by distro.
-DIST_PKG_DIR="${SOURCE_DIR}/dist-package/${DISTRO}"
+# Local APT package repository: use --pkg-dir if given, otherwise default per-distro path.
+if [ -n "${_PKG_DIR_ARG}" ]; then
+  DIST_PKG_DIR="${_PKG_DIR_ARG}"
+else
+  DIST_PKG_DIR="${SOURCE_DIR}/dist-package/${DISTRO}"
+fi
 LIST_FILE="/etc/apt/sources.list.d/${PKG_NAME}.list"
 
 export DEBFULLNAME DEBEMAIL
@@ -190,14 +204,16 @@ _build() {
 }
 
 # Remove build outputs.
+# Default : remove dist/<distro>/ (build artifacts for the current distro) and obj dirs.
+# --packages : also remove the local package repository (DIST_PKG_DIR)
 # --apt-list : also remove the APT source list entry
 # --tarball  : also remove the custom pbuilder base tarball
 _clean() {
   echo "🧹 [Clean] Removing build artifacts"
   cd "${SOURCE_DIR}" || exit 1
 
-  echo "🗑️  [1/2] Removing dist/, dist-package/, and build artifacts..."
-  local clean_dirs=("dist/" "dist-package/")
+  echo "🗑️  [1/3] Removing dist/${DISTRO}/ and build artifacts..."
+  local clean_dirs=("dist/${DISTRO}/")
   # Use caller-supplied extra dirs if provided, otherwise fall back to the default build output dir.
   if [ ${#CLEAN_EXTRA_DIRS[@]} -gt 0 ]; then
     clean_dirs+=("${CLEAN_EXTRA_DIRS[@]}")
@@ -221,6 +237,16 @@ _clean() {
     echo "  > changelog restored from backup"
   else
     echo "  > No changelog backup found, skipping"
+  fi
+
+  if [ "${CLEAN_PACKAGES}" = "1" ]; then
+    echo "🗑️  [--packages] Removing local package repository... (${DIST_PKG_DIR})"
+    if [ -d "${DIST_PKG_DIR}" ]; then
+      rm -rf "${DIST_PKG_DIR}"
+      echo "  > Package repository removed"
+    else
+      echo "  > Package repository not found, skipping"
+    fi
   fi
 
   if [ "${CLEAN_APT_LIST}" = "1" ]; then
@@ -274,29 +300,32 @@ _base_reset() {
   echo "✅ Base reset complete: ${BASETGZ}"
 }
 
-# Create a local APT repository in dist-package/ from all .deb files in dist/.
+# Add .deb files from dist/ into the local APT repository, then regenerate the Packages index.
+# The repository accumulates across builds — existing packages are not removed.
+# Same-filename packages (identical name+version+arch) are overwritten by the latest build.
+# Use 'clean --packages' to wipe the repository from scratch.
 _package_local() {
-  echo "📦 [Package/local] Building local APT repository from dist/"
+  echo "📦 [Package/local] Adding .deb files to local APT repository"
+  echo "  > Repository: ${DIST_PKG_DIR}"
 
-  echo "🔍 [1/3] Collecting .deb files..."
+  echo "🔍 [1/3] Collecting .deb files from ${DIST_DIR}..."
   if ! ls "${DIST_DIR}/"*.deb &>/dev/null; then
     echo "❌ No .deb files found in ${DIST_DIR}/. Run build first."
     exit 1
   fi
 
-  rm -rf "${DIST_PKG_DIR}"
   mkdir -p "${DIST_PKG_DIR}"
   cp "${DIST_DIR}/"*.deb "${DIST_PKG_DIR}/" \
-    || _check_error "Failed to copy .deb files to dist-package/"
-  echo "  > .deb files copied to ${DIST_PKG_DIR}"
+    || _check_error "Failed to copy .deb files to ${DIST_PKG_DIR}/"
+  echo "  > .deb files copied ($(ls "${DIST_PKG_DIR}/"*.deb | wc -l) total in repo)"
 
-  echo "📝 [2/3] Generating Packages index..."
+  echo "📝 [2/3] Regenerating Packages index..."
   cd "${DIST_PKG_DIR}" || exit 1
   dpkg-scanpackages . /dev/null | tee Packages > /dev/null \
     || _check_error "Failed to generate Packages index"
   # -k: keep the uncompressed Packages file alongside Packages.gz.
   gzip -fk Packages || _check_error "Failed to create Packages.gz"
-  echo "  > Packages and Packages.gz generated"
+  echo "  > Packages index updated"
 
   echo "📋 [3/3] Registering APT source list..."
   echo "  > Target path: ${LIST_FILE}"
@@ -366,12 +395,13 @@ _package() {
 
 echo "💡 Usage:"
 echo "  build           [--jammy] [--name <n>] [--email <e>] [--tarball-dir <path>] [--source-dir <path>] : bump version and run pdebuild"
-echo "  package --local [--jammy]                                                   : build dist-package/ from dist/*.deb"
+echo "  package --local [--pkg-dir <path>] [--jammy]                                : accumulate dist/*.deb into local APT repo, regenerate Packages index"
 echo "  package --jfrog [--jfrog-token <t>] [--jfrog-url <u>] [--jammy]           : upload dist/*.deb to JFrog (env: JFROG_TOKEN, JFROG_URL)"
-echo "  clean                [--jammy]                                               : remove dist/, dist-package/, changelog.bak"
-echo "  clean --apt-list     [--jammy]                                               : clean + remove APT source list"
-echo "  clean --tarball      [--jammy] [--tarball-dir <path>]                        : clean + remove custom base tarball"
-echo "  all     --local [--jammy] [--name <n>] [--email <e>] [--tarball-dir <path>] : build + package --local"
+echo "  clean                   [--jammy]                                           : remove dist/<distro>/, obj dirs, changelog.bak"
+echo "  clean --packages        [--pkg-dir <path>] [--jammy]                       : clean + remove local package repo"
+echo "  clean --apt-list        [--jammy]                                           : clean + remove APT source list"
+echo "  clean --tarball         [--jammy] [--tarball-dir <path>]                   : clean + remove custom base tarball"
+echo "  all     --local [--pkg-dir <path>] [--jammy] [--name <n>] [--email <e>]   : build + package --local"
 echo "  base-reset      [--jammy] [--tarball-dir <path>]                             : delete and recreate custom base tarball"
 echo "  (default distro: noble / default tarball dir: /var/cache/pbuilder / default source dir: pwd)"
 
