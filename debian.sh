@@ -36,8 +36,9 @@ source "${_CFG}"
 #
 # JFROG  (for package --jfrog)
 #   Resolved in order: env var → CLI arg → fail
-#   JFROG_TOKEN / --jfrog-token <token>  JFrog Reference Token (Identity Token)
-#   JFROG_URL   / --jfrog-url   <url>    Artifactory repository URL
+#   JFROG_TOKEN     / --jfrog-token     <token>  JFrog Identity Token (Reference Token)
+#   JFROG_URL       / --jfrog-url       <url>    Artifactory repository URL
+#   JFROG_COMPONENT / --jfrog-component <name>   Debian component  (default: main)
 #
 # APTLY  (for package --aptly)
 #   Resolved in order: env var → CLI arg → fail
@@ -64,6 +65,7 @@ _PKG_DIR_ARG=""
 # CLI-supplied JFrog values (env vars take priority; resolved after arg parsing below).
 _CLI_JFROG_TOKEN=""
 _CLI_JFROG_URL=""
+_CLI_JFROG_COMPONENT=""
 # CLI-supplied Aptly values (env vars take priority; resolved after arg parsing below).
 _CLI_APTLY_TOKEN=""
 _CLI_APTLY_URL=""
@@ -87,8 +89,9 @@ while [ $# -gt 0 ]; do
     --pkg-dir)      _PKG_DIR_ARG=$(realpath "$2"); shift ;;  # Override local package repo path
     --tarball-dir)  TARBALL_DIR="$2"; shift ;;  # Override tarball directory (e.g. for CI caching)
     --source-dir)   SOURCE_DIR=$(realpath "$2"); shift ;;  # Override source directory (e.g. for monorepo CI)
-    --jfrog-token)  _CLI_JFROG_TOKEN="$2"; shift ;;
-    --jfrog-url)    _CLI_JFROG_URL="$2"; shift ;;
+    --jfrog-token)      _CLI_JFROG_TOKEN="$2"; shift ;;
+    --jfrog-url)        _CLI_JFROG_URL="$2"; shift ;;
+    --jfrog-component)  _CLI_JFROG_COMPONENT="$2"; shift ;;
     --aptly-token)  _CLI_APTLY_TOKEN="$2"; shift ;;
     --aptly-url)    _CLI_APTLY_URL="$2"; shift ;;
     --aptly-repo)   _CLI_APTLY_REPO="$2"; shift ;;
@@ -100,6 +103,8 @@ done
 JFROG_TOKEN="${JFROG_TOKEN:-${_CLI_JFROG_TOKEN}}"
 JFROG_URL="${JFROG_URL:-${_CLI_JFROG_URL}}"
 JFROG_URL="${JFROG_URL%/}"  # strip trailing slash
+JFROG_COMPONENT="${JFROG_COMPONENT:-${_CLI_JFROG_COMPONENT}}"
+JFROG_COMPONENT="${JFROG_COMPONENT:-main}"  # default component
 APTLY_TOKEN="${APTLY_TOKEN:-${_CLI_APTLY_TOKEN}}"
 APTLY_URL="${APTLY_URL:-${_CLI_APTLY_URL}}"
 APTLY_URL="${APTLY_URL%/}"  # strip trailing slash
@@ -491,9 +496,9 @@ _package_jfrog() {
     # Extract architecture from filename: <name>_<version>_<arch>.deb
     arch=$(echo "${filename}" | sed 's/.*_\([^_]*\)\.deb$/\1/')
 
-    echo "  > Uploading ${filename} (arch=${arch})..."
+    echo "  > Uploading ${filename} (arch=${arch}, component=${JFROG_COMPONENT})..."
     curl -f -H "Authorization: Bearer ${JFROG_TOKEN}" \
-      -XPUT "${JFROG_URL}/pool/${filename};deb.distribution=${DISTRO};deb.component=main;deb.architecture=${arch}" \
+      -XPUT "${JFROG_URL}/pool/${filename};deb.distribution=${DISTRO};deb.component=${JFROG_COMPONENT};deb.architecture=${arch}" \
       -T "${deb_file}" \
       || _check_error "Failed to upload ${filename}"
     echo "  > Uploaded: ${filename}"
@@ -591,8 +596,8 @@ echo "  package --local   Accumulate dist/*.deb into local APT repo"
 echo "                    [--pkg-dir <path>] [--jammy]"
 echo ""
 echo "  package --jfrog   Upload dist/*.deb to JFrog Artifactory"
-echo "                    [--jfrog-token <t>] [--jfrog-url <u>] [--jammy]"
-echo "                    (env: JFROG_TOKEN, JFROG_URL)"
+echo "                    [--jfrog-token <t>] [--jfrog-url <u>] [--jfrog-component <c>] [--jammy]"
+echo "                    (env: JFROG_TOKEN, JFROG_URL, JFROG_COMPONENT)"
 echo ""
 echo "  package --aptly   Upload dist/*.deb to Aptly"
 echo "                    [--aptly-token <t>] [--aptly-url <u>] [--aptly-repo <r>] [--jammy]"
