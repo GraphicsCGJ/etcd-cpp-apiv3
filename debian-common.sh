@@ -305,8 +305,9 @@ _clean() {
 }
 
 # Manage packages in an Aptly repository.
-# aptly --list                          : show all packages in the repo
-# aptly --remove <str> [--jammy]        : remove packages matching <str>, then publish
+# aptly --list-repos                    : list all repos on server
+# aptly --list                          : show all packages in the repo (no distro needed)
+# aptly --remove <str> [--jammy]        : remove packages matching <str>, then publish (distro needed for publish endpoint)
 _aptly() {
   if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ]; then
     echo "❌ APTLY_TOKEN, APTLY_URL must be set."
@@ -596,8 +597,7 @@ echo "  clean --tarball   Also remove custom base tarball     [--tarball-dir <pa
 echo ""
 echo "━━━ APTLY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  aptly --list-repos        List all repos on Aptly server"
-echo "  aptly --list              List packages in Aptly repo"
-echo "                            [--aptly-repo <r>] [--jammy]"
+echo "  aptly --list              List packages in Aptly repo  [--aptly-repo <r>]"
 echo "  aptly --remove <str>      Remove packages matching <str>, update publish"
 echo "                            [--aptly-repo <r>] [--jammy]"
 echo ""
