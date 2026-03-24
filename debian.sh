@@ -55,6 +55,8 @@ DISTRO="noble"  # default: Ubuntu 24.04 LTS
 CLEAN_APT_LIST=0
 CLEAN_PACKAGES=0
 CLEAN_TARBALL=0
+JFROG_LIST=0
+JFROG_REMOVE=""
 APTLY_LIST=0
 APTLY_LIST_REPOS=0
 APTLY_REMOVE=""
@@ -78,9 +80,9 @@ while [ $# -gt 0 ]; do
     --apt-list)     CLEAN_APT_LIST=1 ;; # Also remove APT source list on clean
     --packages)     CLEAN_PACKAGES=1 ;; # Also remove local package repo on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
-    --list)         APTLY_LIST=1 ;;
+    --list)         APTLY_LIST=1; JFROG_LIST=1 ;;
     --list-repos)   APTLY_LIST_REPOS=1 ;;
-    --remove)       APTLY_REMOVE="$2"; shift ;;
+    --remove)       APTLY_REMOVE="$2"; JFROG_REMOVE="$2"; shift ;;
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
     --aptly)        PACKAGE_MODE="aptly" ;;
@@ -316,6 +318,74 @@ _clean() {
   fi
 
   echo "✨ Clean complete!"
+}
+
+# Manage packages in JFrog Artifactory.
+# jfrog --list             : list all .deb files in the repo
+# jfrog --remove <str>     : delete files whose name contains <str>
+_jfrog() {
+  if [ -z "${JFROG_TOKEN}" ]; then
+    echo "❌ JFROG_TOKEN must be set."
+    exit 1
+  fi
+  if [ -z "${JFROG_URL}" ]; then
+    echo "❌ JFROG_URL must be set."
+    exit 1
+  fi
+
+  # Derive repoKey and base Artifactory URL from JFROG_URL
+  # Expected format: https://<org>.jfrog.io/artifactory/<repoKey>
+  local base_url repo_key
+  base_url=$(echo "${JFROG_URL}" | sed 's|/artifactory/.*|/artifactory|')
+  repo_key=$(echo "${JFROG_URL}" | sed 's|.*/artifactory/||')
+
+  if [ "${JFROG_LIST}" = "1" ]; then
+    echo "📋 [JFrog] Packages in '${repo_key}':"
+    curl -sf -H "Authorization: Bearer ${JFROG_TOKEN}" \
+      "${base_url}/api/storage/${repo_key}/pool?list&deep=1" \
+      | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+files = [f for f in data.get('files', []) if f['uri'].endswith('.deb')]
+if not files:
+    print('  (empty)')
+else:
+    print(f\"  {'File':<60} {'Size':>10}\")
+    print('  ' + '-'*72)
+    for f in sorted(files, key=lambda x: x['uri']):
+        size = int(f.get('size', 0))
+        size_str = f'{size//1024} KB' if size >= 1024 else f'{size} B'
+        print(f\"  {f['uri'].lstrip('/'):<60} {size_str:>10}\")
+" || _check_error "Failed to list JFrog packages"
+  fi
+
+  if [ -n "${JFROG_REMOVE}" ]; then
+    echo "🗑️  [JFrog] Removing files matching '${JFROG_REMOVE}' from '${repo_key}'..."
+    local file_list
+    file_list=$(curl -sf -H "Authorization: Bearer ${JFROG_TOKEN}" \
+      "${base_url}/api/storage/${repo_key}/pool?list&deep=1" \
+      | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+matched = [f['uri'].lstrip('/') for f in data.get('files', [])
+           if '${JFROG_REMOVE}' in f['uri'] and f['uri'].endswith('.deb')]
+print('\n'.join(matched))
+") || _check_error "Failed to query JFrog packages"
+
+    if [ -z "${file_list}" ]; then
+      echo "  > No matching files found"
+    else
+      echo "${file_list}" | while IFS= read -r filepath; do
+        echo "  > Deleting: ${filepath}"
+        curl -sf -X DELETE \
+          -H "Authorization: Bearer ${JFROG_TOKEN}" \
+          "${base_url}/${repo_key}/${filepath}" \
+          || _check_error "Failed to delete ${filepath}"
+        echo "  > Deleted"
+      done
+      echo "✅ Done"
+    fi
+  fi
 }
 
 # Manage packages in an Aptly repository.
@@ -609,6 +679,11 @@ echo "  clean --packages  Also remove local package repo      [--pkg-dir <path>]
 echo "  clean --apt-list  Also remove APT source list         [--jammy]"
 echo "  clean --tarball   Also remove custom base tarball     [--tarball-dir <path>] [--jammy]"
 echo ""
+echo "━━━ JFROG ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  jfrog --list              List .deb files in JFrog repo"
+echo "  jfrog --remove <str>      Delete files whose name contains <str>"
+echo "                            (env: JFROG_TOKEN, JFROG_URL)"
+echo ""
 echo "━━━ APTLY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  aptly --list-repos        List all repos on Aptly server"
 echo "  aptly --list              List packages in Aptly repo  [--aptly-repo <r>]"
@@ -628,6 +703,7 @@ case "$COMMAND" in
   build)      _build ;;
   package)    _package ;;
   clean)      _clean ;;
+  jfrog)      _jfrog ;;
   aptly)      _aptly ;;
   all)        _build && _package ;;
   base-reset) _base_reset ;;
