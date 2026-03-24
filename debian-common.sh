@@ -46,6 +46,7 @@ CLEAN_APT_LIST=0
 CLEAN_PACKAGES=0
 CLEAN_TARBALL=0
 APTLY_LIST=0
+APTLY_LIST_REPOS=0
 APTLY_REMOVE=""
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
@@ -67,6 +68,7 @@ while [ $# -gt 0 ]; do
     --packages)     CLEAN_PACKAGES=1 ;; # Also remove local package repo on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
     --list)         APTLY_LIST=1 ;;
+    --list-repos)   APTLY_LIST_REPOS=1 ;;
     --remove)       APTLY_REMOVE="$2"; shift ;;
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
@@ -306,8 +308,31 @@ _clean() {
 # aptly --list                          : show all packages in the repo
 # aptly --remove <str> [--jammy]        : remove packages matching <str>, then publish
 _aptly() {
-  if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ] || [ -z "${APTLY_REPO}" ]; then
-    echo "❌ APTLY_TOKEN, APTLY_URL, APTLY_REPO must all be set."
+  if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ]; then
+    echo "❌ APTLY_TOKEN, APTLY_URL must be set."
+    exit 1
+  fi
+
+  if [ "${APTLY_LIST_REPOS}" = "1" ]; then
+    echo "📦 [Aptly] Repositories on ${APTLY_URL}:"
+    curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+      "${APTLY_URL}/api/repos" \
+      | python3 -c "
+import sys, json
+repos = json.load(sys.stdin)
+if not repos:
+    print('  (none)')
+else:
+    print(f\"  {'Name':<30} {'Comment'}\")
+    print('  ' + '-'*60)
+    for r in repos:
+        print(f\"  {r['Name']:<30} {r.get('Comment', '')}\")
+" || _check_error "Failed to list aptly repos"
+    return
+  fi
+
+  if [ -z "${APTLY_REPO}" ]; then
+    echo "❌ APTLY_REPO must be set."
     exit 1
   fi
 
@@ -570,6 +595,7 @@ echo "  clean --apt-list  Also remove APT source list         [--jammy]"
 echo "  clean --tarball   Also remove custom base tarball     [--tarball-dir <path>] [--jammy]"
 echo ""
 echo "━━━ APTLY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  aptly --list-repos        List all repos on Aptly server"
 echo "  aptly --list              List packages in Aptly repo"
 echo "                            [--aptly-repo <r>] [--jammy]"
 echo "  aptly --remove <str>      Remove packages matching <str>, update publish"
