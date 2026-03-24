@@ -45,9 +45,8 @@ DISTRO="noble"  # default: Ubuntu 24.04 LTS
 CLEAN_APT_LIST=0
 CLEAN_PACKAGES=0
 CLEAN_TARBALL=0
-CLEAN_APTLY=0
-CLEAN_APTLY_LIST=0
-CLEAN_APTLY_REMOVE=""
+APTLY_LIST=0
+APTLY_REMOVE=""
 PACKAGE_MODE=""
 TARBALL_DIR="/var/cache/pbuilder"
 SOURCE_DIR=$(pwd)
@@ -67,9 +66,8 @@ while [ $# -gt 0 ]; do
     --apt-list)     CLEAN_APT_LIST=1 ;; # Also remove APT source list on clean
     --packages)     CLEAN_PACKAGES=1 ;; # Also remove local package repo on clean
     --tarball)      CLEAN_TARBALL=1 ;;  # Also remove custom base tarball on clean
-    --aptly)        CLEAN_APTLY=1 ;;     # Remove stale packages from aptly repo on clean
-    --list)         CLEAN_APTLY_LIST=1 ;; # List packages in aptly repo
-    --remove)       CLEAN_APTLY_REMOVE="$2"; shift ;; # Remove packages matching this version string
+    --list)         APTLY_LIST=1 ;;
+    --remove)       APTLY_REMOVE="$2"; shift ;;
     --local)        PACKAGE_MODE="local" ;;
     --jfrog)        PACKAGE_MODE="jfrog" ;;
     --aptly)        PACKAGE_MODE="aptly" ;;
@@ -301,22 +299,29 @@ _clean() {
     fi
   fi
 
-  if [ "${CLEAN_APTLY_LIST}" = "1" ] || [ "${CLEAN_APTLY}" = "1" ] || [ -n "${CLEAN_APTLY_REMOVE}" ]; then
-    if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ] || [ -z "${APTLY_REPO}" ]; then
-      echo "  > Skipping aptly: APTLY_TOKEN, APTLY_URL, APTLY_REPO must all be set."
-    else
-      local all_pkgs all_refs
-      all_refs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
-        "${APTLY_URL}/api/repos/${APTLY_REPO}/packages") \
-        || _check_error "Failed to query aptly repo '${APTLY_REPO}'"
-      all_pkgs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
-        "${APTLY_URL}/api/repos/${APTLY_REPO}/packages?format=details") \
-        || _check_error "Failed to query aptly repo details '${APTLY_REPO}'"
+  echo "✨ Clean complete!"
+}
 
-      # --list: print packages in readable format
-      if [ "${CLEAN_APTLY_LIST}" = "1" ]; then
-        echo "📋 [--list] Packages in '${APTLY_REPO}':"
-        echo "${all_pkgs}" | python3 -c "
+# Manage packages in an Aptly repository.
+# aptly --list                          : show all packages in the repo
+# aptly --remove <str> [--jammy]        : remove packages matching <str>, then publish
+_aptly() {
+  if [ -z "${APTLY_TOKEN}" ] || [ -z "${APTLY_URL}" ] || [ -z "${APTLY_REPO}" ]; then
+    echo "❌ APTLY_TOKEN, APTLY_URL, APTLY_REPO must all be set."
+    exit 1
+  fi
+
+  local all_refs all_pkgs
+  all_refs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+    "${APTLY_URL}/api/repos/${APTLY_REPO}/packages") \
+    || _check_error "Failed to query aptly repo '${APTLY_REPO}'"
+  all_pkgs=$(curl -sf -H "Authorization: Bearer ${APTLY_TOKEN}" \
+    "${APTLY_URL}/api/repos/${APTLY_REPO}/packages?format=details") \
+    || _check_error "Failed to query aptly repo details"
+
+  if [ "${APTLY_LIST}" = "1" ]; then
+    echo "📋 [Aptly] Packages in '${APTLY_REPO}':"
+    echo "${all_pkgs}" | python3 -c "
 import sys, json
 pkgs = json.load(sys.stdin)
 if not pkgs:
@@ -327,42 +332,37 @@ else:
     for p in pkgs:
         print(f\"  {p['Package']:<30} {p['Version']:<40} {p['Architecture']}\")
 "
-      fi
-
-      # --remove <version>: delete packages matching the given string
-      if [ -n "${CLEAN_APTLY_REMOVE}" ]; then
-        echo "🗑️  [--remove] Removing packages matching '${CLEAN_APTLY_REMOVE}' from '${APTLY_REPO}'..."
-        local remove_refs
-        remove_refs=$(echo "${all_refs}" | python3 -c "
-import sys, json
-pkgs = json.load(sys.stdin)
-matched = [p for p in pkgs if '${CLEAN_APTLY_REMOVE}' in p]
-print(json.dumps(matched))
-")
-        if [ "${remove_refs}" = "[]" ]; then
-          echo "  > No matching packages found"
-        else
-          echo "  > Removing: ${remove_refs}"
-          curl -sf -X DELETE \
-            -H "Authorization: Bearer ${APTLY_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"PackageRefs\": ${remove_refs}}" \
-            "${APTLY_URL}/api/repos/${APTLY_REPO}/packages" \
-            || _check_error "Failed to delete packages"
-          echo "  > Removed. Updating publish..."
-          curl -sf --path-as-is -X PUT \
-            -H "Authorization: Bearer ${APTLY_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data '{"Signing": {"Skip": true}}' \
-            "${APTLY_URL}/api/publish/./${DISTRO}" \
-            || _check_error "Failed to update aptly publish"
-          echo "  > Publish updated"
-        fi
-      fi
-    fi
   fi
 
-  echo "✨ Clean complete!"
+  if [ -n "${APTLY_REMOVE}" ]; then
+    echo "🗑️  [Aptly] Removing packages matching '${APTLY_REMOVE}' from '${APTLY_REPO}'..."
+    local remove_refs
+    remove_refs=$(echo "${all_refs}" | python3 -c "
+import sys, json
+pkgs = json.load(sys.stdin)
+matched = [p for p in pkgs if '${APTLY_REMOVE}' in p]
+print(json.dumps(matched))
+")
+    if [ "${remove_refs}" = "[]" ]; then
+      echo "  > No matching packages found"
+    else
+      echo "  > Removing: ${remove_refs}"
+      curl -sf -X DELETE \
+        -H "Authorization: Bearer ${APTLY_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "{\"PackageRefs\": ${remove_refs}}" \
+        "${APTLY_URL}/api/repos/${APTLY_REPO}/packages" \
+        || _check_error "Failed to delete packages"
+      echo "  > Removed. Updating publish..."
+      curl -sf --path-as-is -X PUT \
+        -H "Authorization: Bearer ${APTLY_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data '{"Signing": {"Skip": true}}' \
+        "${APTLY_URL}/api/publish/./${DISTRO}" \
+        || _check_error "Failed to update aptly publish"
+      echo "  > Publish updated"
+    fi
+  fi
 }
 
 # Remove the custom base tarball and recreate it from scratch.
@@ -552,8 +552,8 @@ echo "  clean                   [--jammy]                                       
 echo "  clean --packages        [--pkg-dir <path>] [--jammy]                       : clean + remove local package repo"
 echo "  clean --apt-list        [--jammy]                                           : clean + remove APT source list"
 echo "  clean --tarball         [--jammy] [--tarball-dir <path>]                   : clean + remove custom base tarball"
-echo "  clean --aptly --list    [--aptly-repo <r>] [--jammy]                       : list packages in aptly repo"
-echo "  clean --aptly --remove <ver> [--aptly-repo <r>] [--jammy]                : remove packages matching <ver> string from aptly repo, then publish"
+echo "  aptly --list            [--aptly-repo <r>] [--jammy]                       : list packages in aptly repo"
+echo "  aptly --remove <str>    [--aptly-repo <r>] [--jammy]                       : remove packages matching <str>, update publish"
 echo "  all     --local [--pkg-dir <path>] [--jammy] [--name <n>] [--email <e>]   : build + package --local"
 echo "  base-reset      [--jammy] [--tarball-dir <path>]                             : delete and recreate custom base tarball"
 echo "  (default distro: noble / default tarball dir: /var/cache/pbuilder / default source dir: pwd)"
@@ -562,7 +562,8 @@ case "$COMMAND" in
   build)      _build ;;
   package)    _package ;;
   clean)      _clean ;;
+  aptly)      _aptly ;;
   all)        _build && _package ;;
   base-reset) _base_reset ;;
-  *)          echo "Usage: $0 {build|package --local|package --jfrog|package --aptly|clean|all --local|base-reset} [--jammy]" ;;
+  *)          echo "Usage: $0 {build|package --local|package --jfrog|package --aptly|clean|aptly --list|aptly --remove|all --local|base-reset} [--jammy]" ;;
 esac
